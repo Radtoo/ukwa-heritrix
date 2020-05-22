@@ -1,4 +1,4 @@
-version: '2'
+version: '3.8'
 
 services:
   # UKWA Heritrix
@@ -53,19 +53,11 @@ services:
       # Override to use a different uriUniqFilter:
       - ./jobs/frequent/uriuniqfilter-bloom.xml:/jobs/frequent/uriuniqfilter.xml
       #- ./docker/shared:/shared
-    volumes_from:
-      - dvc:rw  
-
-  # Data Volume Container for crawler job definitions and outputs
-  dvc:
-    image: busybox
-    volumes:
-      - ./target/testing/heritrix/output:/heritrix/output
-      - ./target/testing/heritrix/state:/heritrix/state
-      - ./target/testing/heritrix/wren:/heritrix/wren
-  #    - ./target/testing/heritrix/scratch:/heritrix/scratch
-  #    - ./jobs:/jobs
-
+      - dvc:/heritrix/output
+      - dvc:/heritrix/state
+      - dvc:/heritrix/wren
+        # - ./jobs:/jobs
+ 
   # Clamd virus scanning Service
   clamd:
     image: ukwa/clamd
@@ -74,25 +66,27 @@ services:
 
   # Kafka
   kafka:
-    image: wurstmeister/kafka:1.1.0
+    image: wurstmeister/kafka
+    depends_on:
+      - zookeeper
     ports:
-      - "9092:9092"
+      - "9092:9092" # kafka:9092 used inside containerized environment
+      - "29092:29092" # localhost:29092 used outside containerized environment
     environment:
-      KAFKA_ADVERTISED_HOST_NAME: kafka
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_NUM_RECOVERY_THREADS_PER_DATA_DIR: 10
       LOG_RETENTION_HOURS: -1
       LOG_RETENTION_BYTES: -1
       NUM_PARTITIONS: 16
       KAFKA_CREATE_TOPICS: "fc.candidates:16:1 --config=compression.type=snappy,fc.tocrawl:16:1 --config=compression.type=snappy,fc.crawled:16:1 --config=compression.type=snappy,fc.discarded:16:1 --config=compression.type=snappy,fc.inscope:16:1 --config=compression.type=snappy"
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       LOG4J_LOGGER_KAFKA: WARN
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - zookeeper
+    #volumes:
+    #  - /var/run/docker.sock:/var/run/docker.sock
 
   # Needs a Zookeeper too
   # ----
@@ -143,8 +137,11 @@ services:
       - crawl-test-site.webarchive.org.uk
     ulimits:
       nproc: 2000 # See https://github.com/internetarchive/warcprox/blob/2.x/warcprox/warcproxy.py#L413
-    volumes_from:
-      - dvc:rw  
+    volumes:
+      - dvc:/heritrix/output
+      - dvc:/heritrix/state
+      - dvc:/heritrix/wren
+
 
   # tinycdxserver
   cdxserver:
@@ -156,7 +153,6 @@ services:
   #  volumes:
   #    - ./testing/cdx:/cdx-data
 
-
   # ----------------------------------------------
   # Wayback Access
   # ----------------------------------------------
@@ -166,8 +162,10 @@ services:
       - 8001:8000
     environment:
       - "WARC_PATHS=/heritrix/output,/heritrix/wren"
-    volumes_from:
-      - dvc:ro
+    volumes:
+      - dvc:/heritrix/output:ro
+      #- dvc:/heritrix/state:ro
+      - dvc:/heritrix/wren:ro
 
   # OpenWayback for playback
   openwayback:
@@ -206,11 +204,12 @@ services:
   # This runs the integration tests
   robot:
     build: integration-test/robot
-    command: --outputdir /out /tests
-    volumes:
-      - ./integration-test/robot/tests:/tests:ro
-      - ./integration-test/results:/out:rw
     depends_on:
       - kafka
       - cdxserver
-      
+    command: --outputdir /out /tests
+    volumes:
+    - ./integration-test/robot/tests:/tests:ro
+    - ./integration-test/results:/out:rw
+volumes:
+  dvc:
